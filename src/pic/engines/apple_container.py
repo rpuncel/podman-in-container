@@ -5,10 +5,6 @@ import subprocess
 
 from .base import Engine, EngineError
 
-# A stock, minimal image is fine here: this ticket proves the launch/exec/teardown
-# plumbing, not inner-podman viability (that's the machine-image spike).
-DEFAULT_IMAGE = "alpine:3.22"
-
 
 class AppleContainerEngine(Engine):
     name = "container"
@@ -19,10 +15,12 @@ class AppleContainerEngine(Engine):
     def _run(self, *args: str) -> subprocess.CompletedProcess:
         return subprocess.run(["container", *args], capture_output=True, text=True)
 
-    def create(self, machine_name: str) -> None:
+    def create(self, machine_name: str, image: str, memory: str) -> None:
         # Idempotent: safe to call even if the service is already running.
         self._run("system", "start")
-        result = self._run("machine", "create", DEFAULT_IMAGE, "--name", machine_name)
+        result = self._run(
+            "machine", "create", image, "--name", machine_name, "--memory", memory
+        )
         if result.returncode != 0:
             raise EngineError(f"container machine create failed: {result.stderr.strip()}")
         self._wait_until_ready(machine_name)

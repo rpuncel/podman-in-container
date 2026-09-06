@@ -1,0 +1,132 @@
+#!/bin/bash
+# Machine entrypoint: the boot-time setup that cannot be baked into the image.
+#
+# Everything here depends on state that only exists once the machine has booted --
+# above all the machine user, which the outer engine creates on first boot, so the
+# image cannot know its name or UID at build time. It runs from a systemd oneshot
+# unit rather than an engine-specific first-boot hook, which keeps it
+# engine-agnostic (ADR-0004): any engine that boots /sbin/init runs it.
+#
+# Idempotent by construction: it re-asserts the desired state on every boot rather
+# than tracking whether it has run before.
+set -euo pipefail
+
+# Also named in src/pic/machine_image.py as INIT_REPORT_PATH; keep the two in step.
+REPORT=/run/pic/machine-init.json
+
+log() { echo "pic-machine-init: $*"; }
+
+# ADR-0002 records that the guest kernel lacks nftables, so the iptables
+# alternative must point at the legacy backend -- that is the binary podman's
+# network backend shells out to. Baked at build time too; re-asserted here because
+# an apt upgrade inside the machine resets the alternative to the nft backend.
+ensure_iptables_legacy() {
+    update-alternatives --set iptables /usr/sbin/iptables-legacy >/dev/null 2>&1
+    update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy >/dev/null 2>&1
+}
+
+# Which backend `iptables` actually resolves to, reported rather than assumed so
+# that a machine whose alternative did not take is visible instead of silent.
+iptables_backend() {
+    case "$(iptables --version 2>/dev/null)" in
+        *legacy*) echo iptables-legacy ;;
+        *nf_tables*) echo iptables-nft ;;
+        *) echo unavailable ;;
+    esac
+}
+
+# The machine's root filesystem comes up with private propagation, which makes
+# rootless podman warn and lose mounts it sets up inside its user namespace.
+ensure_shared_root_propagation() {
+    mount --make-rshared /
+}
+
+# Rootless container networking goes through slirp4netns, which opens /dev/net/tun.
+# On an ordinary Linux host udev widens that node to 0666; this machine runs no
+# udev (systemd-udevd is inactive and Apple's reference image masks
+# systemd-tmpfiles-setup), so the node keeps devtmpfs' root-only 0600 and every
+# rootless `podman run` dies with "open(\"/dev/net/tun\"): Permission denied".
+ensure_tun_accessible() {
+    chmod 0666 /dev/net/tun
+}
+
+# Every login-capable non-root account is a machine user: the outer engine creates
+# one on first boot with the *host* account's UID (501 on macOS), so a UID
+# threshold does not identify it -- having a real login shell does. The image
+# removes Ubuntu's stock `ubuntu` account so nothing else matches.
+machine_users() {
+    local user shell
+    while IFS=: read -r user _ uid _ _ _ shell; do
+        [ "$uid" != 0 ] || continue
+        grep -qxF "$shell" /etc/shells || continue
+        echo "$user"
+    done </etc/passwd
+}
+
+# Rootless podman needs a subordinate ID range to map a user namespace with;
+# without one it silently degrades to a single-UID mapping that breaks most images.
+SUBID_BASE=100000
+SUBID_COUNT=65536
+
+ensure_subids() {
+    local user=$1 index=$2 start
+    start=$((SUBID_BASE + index * SUBID_COUNT))
+    for file in /etc/subuid /etc/subgid; do
+        touch "$file"
+        grep -q "^${user}:" "$file" || echo "${user}:${start}:${SUBID_COUNT}" >>"$file"
+    done
+}
+
+# `container machine run` is not a login session, so without lingering the user has
+# no systemd user instance and podman falls back from the systemd cgroup manager
+# to cgroupfs.
+ensure_linger() {
+    loginctl enable-linger "$1"
+}
+
+# ADR-0007 bakes native rootless overlay into storage.conf on the strength of this
+# probe. Re-run it every boot and publish the answer: if a kernel change ever
+# withdraws unprivileged overlay, that shows up here rather than as mysteriously
+# slow builds.
+native_rootless_overlay_supported() {
+    local user=$1
+    setpriv --reuid "$user" --regid "$(id -g "$user")" --init-groups \
+        unshare --user --map-root-user --mount \
+        /usr/local/sbin/pic-overlay-probe >/dev/null 2>&1
+}
+
+main() {
+    local firewall overlay=false users=() index=0
+
+    ensure_iptables_legacy
+    firewall=$(iptables_backend)
+    log "firewall driver: $firewall"
+
+    ensure_shared_root_propagation
+    ensure_tun_accessible
+
+    while read -r user; do
+        [ -n "$user" ] || continue
+        ensure_subids "$user" "$index"
+        ensure_linger "$user"
+        users+=("$user")
+        index=$((index + 1))
+    done < <(machine_users)
+    log "provisioned machine users: ${users[*]:-none}"
+
+    if [ ${#users[@]} -gt 0 ] && native_rootless_overlay_supported "${users[0]}"; then
+        overlay=true
+    fi
+    log "native rootless overlay supported: $overlay"
+
+    local user_list=""
+    for user in ${users[@]+"${users[@]}"}; do
+        user_list="${user_list:+$user_list,}\"$user\""
+    done
+
+    mkdir -p "$(dirname "$REPORT")"
+    printf '{"firewall_driver":"%s","native_rootless_overlay":%s,"machine_users":[%s]}\n' \
+        "$firewall" "$overlay" "$user_list" >"$REPORT"
+}
+
+main "$@"

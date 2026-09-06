@@ -2,13 +2,10 @@ from __future__ import annotations
 
 import click
 
-from .engines import EngineError, detect_engine
+from . import machine as machine_mod
+from .engines import EngineError
 
-DEFAULT_WORKSPACE = "global"
-
-
-def machine_name(workspace: str) -> str:
-    return f"pic-{workspace}"
+DEFAULT_WORKSPACE = machine_mod.DEFAULT_WORKSPACE
 
 
 @click.group()
@@ -20,12 +17,11 @@ def main() -> None:
 @click.option("--workspace", default=DEFAULT_WORKSPACE, show_default=True)
 def launch(workspace: str) -> None:
     """Launch a workspace machine."""
-    engine = detect_engine()
-    name = machine_name(workspace)
-    click.echo(f"Launching machine '{name}' via engine '{engine.name}'...")
+    name = machine_mod.machine_name(workspace)
+    click.echo(f"Launching machine '{name}' (building the machine image if needed)...")
     try:
-        engine.create(name)
-    except EngineError as exc:
+        machine_mod.launch(workspace)
+    except (EngineError, FileNotFoundError) as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"Machine '{name}' is up.")
 
@@ -34,11 +30,10 @@ def launch(workspace: str) -> None:
 @click.option("--workspace", default=DEFAULT_WORKSPACE, show_default=True)
 def teardown(workspace: str) -> None:
     """Tear down a workspace machine."""
-    engine = detect_engine()
-    name = machine_name(workspace)
-    click.echo(f"Tearing down machine '{name}' via engine '{engine.name}'...")
+    name = machine_mod.machine_name(workspace)
+    click.echo(f"Tearing down machine '{name}'...")
     try:
-        engine.destroy(name)
+        machine_mod.teardown(workspace)
     except EngineError as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"Machine '{name}' torn down.")
