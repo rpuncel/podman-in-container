@@ -1,0 +1,14 @@
+[Unit]
+Description=pic machine setup (firewall driver, rootless subids, storage driver)
+# The outer engine creates the machine user during early boot; run after user
+# sessions are allowed so that user exists to provision.
+After=systemd-user-sessions.service
+Wants=systemd-user-sessions.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/pic-machine-init
+
+[Install]
+WantedBy=multi-user.target

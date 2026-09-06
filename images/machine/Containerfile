@@ -1,0 +1,67 @@
+# Machine base image: Ubuntu 24.04 + systemd, with inner podman (ADR-0002, ADR-0004).
+#
+# Built on Apple's reference container-machine Dockerfile (docs/container-machine.md)
+# so we stay on the path the primary outer engine actually tests, plus the podman
+# layer this project needs. Nothing here is engine-specific: the image boots
+# /sbin/init and does its setup from a systemd unit, so it works under any engine
+# that boots a machine from an OCI image.
+FROM ubuntu:24.04
+
+ENV container=container
+
+# systemd + the tools Apple's reference image ships. libpam-systemd is only a
+# Recommends, but without it PAM cannot set XDG_RUNTIME_DIR, `systemd --user`
+# refuses to start, and rootless podman has no runtime dir to work in.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      dbus systemd systemd-sysv libpam-systemd \
+      openssh-server net-tools iproute2 iputils-ping curl wget vim-tiny man-db sudo \
+      ca-certificates && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Inner podman and the pieces rootless podman needs on a Linux host:
+#   uidmap      -> newuidmap/newgidmap, without which rootless podman cannot map a userns
+#   iptables    -> what podman's CNI backend shells out to, pinned to the legacy
+#                  backend per ADR-0002 (see docs/machine-image.md: the nft backend
+#                  in fact also works on the kernel measured)
+#   slirp4netns -> rootless container networking
+# Deliberately absent: fuse-overlayfs. ADR-0007 settles the storage driver as native
+# rootless overlay, so shipping the FUSE driver would only leave a silent way to
+# degrade to it.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      podman uidmap iptables slirp4netns && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# ADR-0002 requires the legacy backend, recording the guest kernel as having no
+# nftables. That premise did not reproduce on the kernel measured (docs/machine-image.md),
+# so this is insurance rather than a workaround -- kept because it is free, because the
+# criterion asks for it, and because a future guest kernel may yet drop nftables.
+RUN update-alternatives --set iptables /usr/sbin/iptables-legacy && \
+    update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
+
+# Apple's reference systemd-in-a-container hardening. networkd-dispatcher is
+# masked rather than disabled: --no-install-recommends leaves it uninstalled,
+# and `systemctl disable` fails on a unit that does not exist.
+RUN >/etc/machine-id && \
+    >/var/lib/dbus/machine-id && \
+    systemctl set-default multi-user.target && \
+    systemctl mask \
+      dev-hugepages.mount \
+      sys-fs-fuse-connections.mount \
+      systemd-update-utmp.service \
+      systemd-tmpfiles-setup.service \
+      console-getty.service \
+      networkd-dispatcher.service && \
+    sed -i -e 's/^AcceptEnv LANG LC_\*$/#AcceptEnv LANG LC_*/' /etc/ssh/sshd_config
+
+# Ubuntu's stock `ubuntu` account (UID 1000) is unwanted in a sandbox and, worse,
+# it would masquerade as a machine user: pic-machine-init identifies machine users
+# by login shell, and the outer engine's real one arrives at first boot.
+RUN userdel --remove ubuntu
+
+COPY rootfs/ /
+
+RUN systemctl enable pic-machine-init.service
+
+# The engine boots the image's init; nothing else to declare.

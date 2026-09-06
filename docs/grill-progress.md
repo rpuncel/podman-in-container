@@ -59,7 +59,7 @@
 
 ## Queued spikes (`/prototype` — technical, not grilling)
 
-1. **Podman-in-container-machine on macOS 15**: create a machine from a systemd image, install/run podman, run a workload. Verify: iptables-legacy firewall driver, RAM bump (`set memory=`), native rootless overlay vs fuse-overlayfs.
+1. ~~**Podman-in-container-machine on macOS 15**~~ — **DONE** (issue #4). Machine boots Ubuntu 24.04 + systemd, inner podman runs non-nested, `podman run hello-world` succeeds. iptables-legacy confirmed; RAM raised to 4G at create time; **native rootless overlay works** → ADR-0007 (no fuse-overlayfs, no rootful). Guest gotchas and findings: `docs/machine-image.md`.
 2. **Host→workload preview networking** extent on macOS 15 (how much is actually degraded).
 
 ## Research already done

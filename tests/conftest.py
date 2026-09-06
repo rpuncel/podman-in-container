@@ -1,30 +1,20 @@
 from __future__ import annotations
 
-import subprocess
-
 import pytest
 
-from pic.engines import Engine, detect_engine
+from pic import machine as machine_mod
 
-
-class MachineHandle:
-    """Handle to a running machine: seam 1 for acceptance tests."""
-
-    def __init__(self, engine: Engine, name: str) -> None:
-        self._engine = engine
-        self.name = name
-        self.engine_name = engine.name
-
-    def exec(self, *command: str) -> subprocess.CompletedProcess:
-        return self._engine.exec(self.name, *command)
+TEST_WORKSPACE = "test"
 
 
 @pytest.fixture(scope="session")
 def machine():
-    engine = detect_engine()
-    name = "pic-test"
+    """A real machine booted from the pic machine image: seam 1 for acceptance tests.
+
+    Session-scoped because booting one costs a build plus a boot, and every
+    acceptance test only reads state the machine established at boot.
+    """
     try:
-        engine.create(name)
-        yield MachineHandle(engine, name)
+        yield machine_mod.launch(TEST_WORKSPACE)
     finally:
-        engine.destroy(name)
+        machine_mod.teardown(TEST_WORKSPACE)

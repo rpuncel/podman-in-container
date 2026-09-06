@@ -1,0 +1,11 @@
+#!/bin/bash
+# Runs inside an unprivileged user namespace: try one real overlay mount.
+# Exits 0 only if the guest kernel allows it, which is what decides whether inner
+# podman gets the native overlay driver or has to fall back to fuse-overlayfs.
+set -eu
+root=$(mktemp -d)
+trap 'umount "$root/merged" 2>/dev/null || true; rm -rf "$root"' EXIT
+mkdir -p "$root"/{lower,upper,work,merged}
+mount -t overlay pic-overlay-probe \
+    -o "lowerdir=$root/lower,upperdir=$root/upper,workdir=$root/work,userxattr" \
+    "$root/merged"
