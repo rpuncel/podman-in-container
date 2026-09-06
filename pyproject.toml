@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "pic"
+version = "0.1.0"
+description = "Podman-in-container sandbox: launch/lifecycle CLI"
+authors = ["Rob Puncel"]
+readme = "README.md"
+packages = [{ include = "pic", from = "src" }]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+click = "^8.5.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0"
+
+[tool.poetry.scripts]
+pic = "pic.cli:main"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
