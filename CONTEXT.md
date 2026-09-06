@@ -43,3 +43,19 @@ _Avoid_: firewall, allowlist (alone), network policy
 **Context mount**:
 A host filesystem path exposed into the machine for the agent to *reference* — related repositories, source of dependency services, worked examples, a shared knowledge/context repository — as distinct from the workspace's own editable **repos**. Read-only by default; read-write is opt-in per mount. Attachable ad-hoc at launch and mix-and-match, independent of workspace membership.
 _Avoid_: volume, bind mount (as the canonical term), reference repo
+
+**Workspace config**:
+The per-workspace YAML on the host at `~/.config/pic/workspaces/<name>.yaml` holding the settings that are hostile to flags: the workspace's **egress policy** allow-list and its **secret manifest**. Shared settings live in a named **base config** it `extends`. Egress merges as base ∪ workspace-adds minus workspace-excludes; the secret manifest merges as base entries overridden by key.
+_Avoid_: settings, profile, config (unqualified)
+
+**Base config**:
+A named config under `~/.config/pic/bases/<name>.yaml` that many **workspace configs** share by declaring `extends: <name>`. Extends nothing itself: layering is one level deep.
+_Avoid_: parent, template, default config
+
+**Secret manifest**:
+A workspace's map from credential name (`git_token`, `anthropic_api_key`) to a **credential reference**. Exactly the credential set that gets injected into the machine, and nothing more.
+_Avoid_: secrets file, vault, credential list
+
+**Credential reference**:
+Where one credential lives in a store the user already runs — `pass:`, `op://`, `gh`, `keychain:` or `env:` — never the credential itself, so a **workspace config** is safe to keep in a dotfiles repo. Resolved on the host at launch (ADR-0006).
+_Avoid_: secret, pointer, credential (when the value is meant)
