@@ -32,10 +32,6 @@ BASES_DIR = "bases"
 _TOP_LEVEL_KEYS = {"extends", "egress", "secrets"}
 _EGRESS_KEYS = {"allow", "exclude"}
 
-# What a workspace that extends nothing merges over.
-_NO_BASE = {"extends": None, "egress": {"allow": (), "exclude": ()}, "secrets": {}}
-
-
 class ConfigError(Exception):
     """A config file is missing, malformed, or says something we can't honour."""
 
@@ -71,11 +67,11 @@ def default_config_home() -> Path:
 def load(name: str, config_home: Path | None = None) -> WorkspaceConfig:
     """Load workspace `name`, merged over the base config it extends (if any)."""
     home = config_home if config_home is not None else default_config_home()
-    document = _read(home / WORKSPACES_DIR / f"{name}.yaml")
+    workspace = _Document.read(home / WORKSPACES_DIR / f"{name}.yaml")
 
-    base_name = document["extends"]
-    base = _read(home / BASES_DIR / f"{base_name}.yaml") if base_name else _NO_BASE
-    if base["extends"]:
+    base_name = workspace.extends()
+    base = _Document.read(home / BASES_DIR / f"{base_name}.yaml") if base_name else _NOTHING
+    if base.extends():
         raise ConfigError(
             f"base config '{base_name}' may not itself extend another base: "
             "layering is one level deep"
@@ -83,86 +79,107 @@ def load(name: str, config_home: Path | None = None) -> WorkspaceConfig:
 
     return WorkspaceConfig(
         name=name,
-        egress_allow=_merge_egress(base["egress"], document["egress"]),
-        secrets=_merge_secrets(base["secrets"], document["secrets"]),
+        egress_allow=_merge_egress(base.egress(), workspace.egress()),
+        # The secret manifest is base entries overridden by key by the workspace, so a
+        # workspace can swap the one credential that differs (spec item 37 of #1).
+        secrets={**base.secrets(), **workspace.secrets()},
     )
 
 
-def _read(path: Path) -> dict:
-    """Parse one config file into a normalised document: every section a mapping.
+class _Document:
+    """One config file, read and validated, able to say where a problem was.
 
-    Rejects anything we wouldn't otherwise act on, so a config that survives this is
-    a config the merges below can trust.
+    Every check here exists because the quiet failure mode is bad: a mistyped
+    `exclude` that got ignored would leave an endpoint reachable. So anything this
+    file says that we would not otherwise act on is an error, named with its path.
     """
-    try:
-        text = path.read_text()
-    except FileNotFoundError:
-        raise ConfigError(f"no config at {path}") from None
-    try:
-        document = yaml.safe_load(text)
-    except yaml.YAMLError as exc:
-        raise ConfigError(f"{path} is not valid YAML: {exc}") from None
 
-    if document is None:
-        document = {}
-    if not isinstance(document, dict):
-        raise ConfigError(f"{path} should hold a mapping, not {type(document).__name__}")
-    _reject_unknown_keys(path, document, _TOP_LEVEL_KEYS, "")
+    def __init__(self, path: Path | None, body: dict) -> None:
+        self.path = path
+        self.body = body
+        self._reject_unknown_keys(body, _TOP_LEVEL_KEYS, "")
 
-    egress = _section(path, document, "egress")
-    _reject_unknown_keys(path, egress, _EGRESS_KEYS, "egress: ")
-    return {
-        "extends": document.get("extends"),
-        "egress": {key: _endpoints(path, egress, key) for key in _EGRESS_KEYS},
-        "secrets": _references(path, _section(path, document, "secrets")),
-    }
-
-
-def _reject_unknown_keys(path: Path, document: dict, known: set[str], prefix: str) -> None:
-    """Refuse a key we don't understand: a typo here silently widens egress."""
-    unknown = sorted(set(document) - known)
-    if unknown:
-        raise ConfigError(
-            f"{path} has unknown {prefix}key(s) {', '.join(unknown)}; "
-            f"expected one of {', '.join(sorted(known))}"
-        )
-
-
-def _section(path: Path, document: dict, key: str) -> dict:
-    section = document.get(key) or {}
-    if not isinstance(section, dict):
-        raise ConfigError(f"{path}: `{key}` should hold a mapping")
-    return section
-
-
-def _endpoints(path: Path, egress: dict, key: str) -> tuple[str, ...]:
-    """One egress list, as a list of hostnames -- a bare string is a mistake, not one."""
-    listed = egress.get(key) or ()
-    if isinstance(listed, str) or not isinstance(listed, (list, tuple)):
-        raise ConfigError(f"{path}: `egress: {key}` should hold a list of endpoints")
-    return tuple(str(endpoint) for endpoint in listed)
-
-
-def _references(path: Path, secrets: dict) -> dict[str, Reference]:
-    """Parse the manifest at load time, so a bad reference fails long before launch."""
-    parsed = {}
-    for name, text in secrets.items():
-        if not isinstance(text, str):
-            raise ConfigError(f"{path}: secret '{name}' should be a credential reference")
+    @classmethod
+    def read(cls, path: Path) -> _Document:
         try:
-            parsed[name] = Reference.parse(text)
-        except CredentialError as exc:
-            raise ConfigError(f"{path}: secret '{name}': {exc}") from None
-    return parsed
+            text = path.read_text()
+        except FileNotFoundError:
+            raise ConfigError(f"no config at {path}") from None
+        try:
+            body = yaml.safe_load(text)
+        except yaml.YAMLError as exc:
+            raise ConfigError(f"{path} is not valid YAML: {exc}") from None
+
+        if body is None:
+            body = {}
+        if not isinstance(body, dict):
+            raise ConfigError(f"{path} should hold a mapping, not {type(body).__name__}")
+        return cls(path, body)
+
+    @classmethod
+    def nothing(cls) -> _Document:
+        """What a workspace that extends nothing layers over: an empty base.
+
+        It has no path because it has no file, which is safe only because an empty
+        body gives every check below nothing to complain about.
+        """
+        return cls(None, {})
+
+    def _error(self, message: str) -> ConfigError:
+        return ConfigError(f"{self.path}: {message}")
+
+    def _reject_unknown_keys(self, mapping: dict, known: set[str], prefix: str) -> None:
+        unknown = sorted(set(mapping) - known)
+        if unknown:
+            raise self._error(
+                f"unknown {prefix}key(s) {', '.join(unknown)}; "
+                f"expected one of {', '.join(sorted(known))}"
+            )
+
+    def _section(self, key: str) -> dict:
+        section = self.body.get(key) or {}
+        if not isinstance(section, dict):
+            raise self._error(f"`{key}` should hold a mapping")
+        return section
+
+    def extends(self) -> str | None:
+        """The base config this one layers over, if it names one."""
+        extends = self.body.get("extends")
+        if extends is not None and not isinstance(extends, str):
+            raise self._error("`extends` should name one base config")
+        return extends
+
+    def egress(self) -> dict[str, tuple[str, ...]]:
+        """The `allow` and `exclude` lists, each a list of endpoints."""
+        section = self._section("egress")
+        self._reject_unknown_keys(section, _EGRESS_KEYS, "egress: ")
+        return {key: self._endpoints(section, key) for key in _EGRESS_KEYS}
+
+    def _endpoints(self, egress: dict, key: str) -> tuple[str, ...]:
+        listed = egress.get(key) or ()
+        # A bare `allow: ghcr.io` would otherwise allow-list one hostname's letters.
+        if isinstance(listed, str) or not isinstance(listed, (list, tuple)):
+            raise self._error(f"`egress: {key}` should hold a list of endpoints")
+        return tuple(str(endpoint) for endpoint in listed)
+
+    def secrets(self) -> dict[str, Reference]:
+        """The secret manifest, parsed now so a bad reference fails before launch."""
+        parsed = {}
+        for name, text in self._section("secrets").items():
+            if not isinstance(text, str):
+                raise self._error(f"secret '{name}' should be a credential reference")
+            try:
+                parsed[name] = Reference.parse(text)
+            except CredentialError as exc:
+                raise self._error(f"secret '{name}': {exc}") from None
+        return parsed
+
+
+_NOTHING = _Document.nothing()
 
 
 def _merge_egress(base: dict, workspace: dict) -> tuple[str, ...]:
-    """base ∪ workspace-adds − workspace-excludes (spec #36)."""
+    """base union workspace-adds minus workspace-excludes (spec item 36 of #1)."""
     excluded = set(workspace["exclude"])
     allowed = [*base["allow"], *workspace["allow"]]
     return tuple(dict.fromkeys(e for e in allowed if e not in excluded))
-
-
-def _merge_secrets(base: dict, workspace: dict) -> dict[str, Reference]:
-    """Base entries, overridden by key by the workspace (spec #37)."""
-    return {**base, **workspace}

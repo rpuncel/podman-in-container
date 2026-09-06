@@ -288,3 +288,10 @@ def test_an_egress_list_written_as_a_bare_string_is_rejected(config_home):
 
     with pytest.raises(ConfigError, match="list of endpoints"):
         workspace_config.load("acme", config_home=config_home)
+
+
+def test_extends_naming_something_other_than_one_base_is_rejected(config_home):
+    workspace(config_home, "acme", "extends: [work, other]\n")
+
+    with pytest.raises(ConfigError, match="one base config"):
+        workspace_config.load("acme", config_home=config_home)

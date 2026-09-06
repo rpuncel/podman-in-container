@@ -74,9 +74,10 @@ here is bad: a mistyped `exclude` would silently leave an endpoint reachable.
 ## Credential references
 
 A manifest entry names *where* a credential lives, never the credential itself, so a
-config is safe to keep in a dotfiles repo. `pic` resolves references on the host at
-launch and injects only the resolved values into the machine (ADR-0006); resolving
-from a locked store triggers that store's normal interactive unlock.
+workspace config is safe to keep in a dotfiles repo. `pic` resolves references on
+the host at launch and injects only the resolved values into the machine (ADR-0006);
+resolving from a locked store triggers that store's normal interactive unlock — its
+prompts reach your terminal, so an unlock looks like an unlock, not a hang.
 
 | Reference | Resolved by | Notes |
 | --- | --- | --- |
