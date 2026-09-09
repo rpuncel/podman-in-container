@@ -8,8 +8,9 @@ mistaken agent is the sandbox, not your Mac.
 The sandbox is a **machine** — a persistent Linux VM booting systemd as PID 1, with
 podman running inside it non-nested, as it would on any Linux host. See
 [`CONTEXT.md`](CONTEXT.md) for the vocabulary, [`docs/adr/`](docs/adr/) for the
-decisions, and [`docs/machine-image.md`](docs/machine-image.md) for how the machine
-image is put together.
+decisions, [`docs/machine-image.md`](docs/machine-image.md) for how the machine
+image is put together, and [`docs/workspace-config.md`](docs/workspace-config.md) for
+how a workspace declares what it may reach and which credentials it gets.
 
 ## Prerequisites
 
@@ -107,6 +108,14 @@ poetry run pic teardown --workspace demo
 The CLI does not yet have a command for getting into a machine or running a workload
 in it — use `container machine run` from the section above for those.
 
+## Configuring a workspace
+
+A workspace's egress allow-list and its secret manifest live in a YAML config on the
+host at `~/.config/pic/workspaces/<name>.yaml`, over a shared base config it
+`extends`. Credentials are named by *reference* (`pass:`, `op://`, `gh`,
+`keychain:`, `env:`) and resolved on the host at launch, so no master key ever
+enters the machine. See [`docs/workspace-config.md`](docs/workspace-config.md).
+
 ## Tests
 
 The acceptance tests boot a real machine and check inner podman inside it, then tear
@@ -114,4 +123,11 @@ it down, so they need no hand-provisioned machine and take about a minute:
 
 ```bash
 poetry run pytest
+```
+
+The workspace config and credential resolver are host-side, so their tests need no
+machine and run in well under a second:
+
+```bash
+poetry run pytest tests/test_workspace_config.py tests/test_credentials.py
 ```
